@@ -4,7 +4,7 @@ Sonda di **MiniBench Net** («Valutazione indipendente di VPS e connettività»)
 [minibench.sh](https://github.com/iacopo-cmd/minibench.sh) già dentro. Gira su una VPS Linux come demone di systemd:
 test della CPU e dello steal ogni 9 minuti, controllo ogni 3, ping ogni 27, traceroute ogni 12 ore (gli intervalli li dà il server).
 
-- **Serve una chiave**, una per macchina, data da noi.
+- **Serve una chiave**, una per macchina: la sonda la chiede da sola, noi approviamo.
 - **Legge soltanto**: non cambia la configurazione, non apre porte, non installa pacchetti.
 - **Privacy**: per riconoscere la macchina manda solo impronte HMAC-SHA256 firmate con un segreto che non lascia la
   macchina (niente MAC, hostname né chiavi SSH); per la rete solo sì/no (IPv6, PTR, NAT, DHCP).
