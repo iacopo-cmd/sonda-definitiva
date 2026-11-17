@@ -19,6 +19,8 @@ python3 -I /opt/minibench-net/minibench-net.py --verifica                 # deve
 systemctl enable --now minibench-net.service minibench-net-vivo.timer
 ```
 
+Il config (`/etc/minibench-net/config.env`) è già precompilato per la macchina netcup: nome `netcup`, provider netcup, nick, URL; mancano solo piano, vCPU, paese e città (dal pannello netcup).
+
 Controllo: `journalctl -u minibench-net.service -f` (righe `check: 201`, `test: 201`).
 Istruzioni passo per passo: [ISTRUZIONI-AGENTE.md](ISTRUZIONI-AGENTE.md).
 Requisiti: Linux con systemd, python3 ≥ 3.9, openssl, ping, findmnt, ip; traceroute consigliato. Licenza: MIT.
