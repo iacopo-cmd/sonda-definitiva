@@ -9,18 +9,16 @@ test della CPU e dello steal ogni 9 minuti, controllo ogni 3, ping ogni 27, trac
 - **Privacy**: per riconoscere la macchina manda solo impronte HMAC-SHA256 firmate con un segreto che non lascia la
   macchina (niente MAC, hostname né chiavi SSH); per la rete solo sì/no (IPv6, PTR, NAT, DHCP).
 
-## Installazione (da root)
+## Installazione: la fa Claude
+
+Niente da configurare (il config è già compilato). Da root:
 
 ```bash
-cd /root && git clone https://github.com/iacopo-cmd/sonda-definitiva.git
-bash sonda-definitiva/installa.sh sonda-definitiva/minibench.sh      # prima verifica, poi installa; non accende niente
-umask 077; printf '%s\n' "$CHIAVE" > /etc/minibench-net/chiave; unset CHIAVE   # la chiave che ti diamo noi
-python3 -I /opt/minibench-net/minibench-net.py --verifica                 # deve finire con PRONTO
-systemctl enable --now minibench-net.service minibench-net-vivo.timer
+cd /root && git clone https://github.com/iacopo-cmd/sonda-definitiva.git && cd sonda-definitiva
+claude "installa la sonda seguendo CLAUDE.md"
 ```
 
-Il config (`/etc/minibench-net/config.env`) è già precompilato per la macchina netcup: nome `netcup`, provider netcup, nick, URL; mancano solo piano, vCPU, paese e città (dal pannello netcup).
+Claude legge [CLAUDE.md](CLAUDE.md), verifica la macchina, installa e accende. L'unica cosa che fai tu: quando te lo
+chiede, scrivi la chiave nel file `/etc/minibench-net/chiave` dal tuo terminale (la chiave non passa mai dalla chat).
 
-Controllo: `journalctl -u minibench-net.service -f` (righe `check: 201`, `test: 201`).
-Istruzioni passo per passo: [ISTRUZIONI-AGENTE.md](ISTRUZIONI-AGENTE.md).
 Requisiti: Linux con systemd, python3 ≥ 3.9, openssl, ping, findmnt, ip; traceroute consigliato. Licenza: MIT.
