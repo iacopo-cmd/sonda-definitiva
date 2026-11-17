@@ -18,7 +18,7 @@ cd /root && git clone https://github.com/iacopo-cmd/sonda-definitiva.git && cd s
 claude "installa la sonda seguendo CLAUDE.md"
 ```
 
-Claude legge [CLAUDE.md](CLAUDE.md), verifica la macchina, installa e accende. L'unica cosa che fai tu: quando te lo
-chiede, scrivi la chiave nel file `/etc/minibench-net/chiave` dal tuo terminale (la chiave non passa mai dalla chat).
+Claude legge [CLAUDE.md](CLAUDE.md), verifica la macchina, installa e accende. L'unica cosa che fai tu: quando te la
+chiede, gli dai la chiave in chat; lui la scrive in `/etc/minibench-net/chiave` (600) e non la ripete.
 
 Requisiti: Linux con systemd, python3 ≥ 3.9, openssl, ping, findmnt, ip; traceroute consigliato. Licenza: MIT.
