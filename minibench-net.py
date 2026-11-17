@@ -26,6 +26,10 @@ Uso:   minibench-net.py --demone        (il servizio: gira per sempre)
        minibench-net.py --verifica [--prima] [--url URL]   bussa al server e controlla che ci sia tutto, PRIMA di
                         installare o di accendere: root, systemd, niente container, programmi, cartelle, server, chiave.
                         Esce con 0 se si puo' partire, 1 se no (e dice perche'). --prima: prima dell'installazione.
+       minibench-net.py --chiedi-chiave [--aspetta]   (0.13) la macchina CHIEDE la sua chiave (/chiedi, con nick, nome e
+                        provider del config), noi approviamo, lei la RITIRA (/ritira) e la scrive in /etc/minibench-net/chiave
+                        (600). La chiave non passa da nessuna chat e non si stampa mai. --aspetta: riprova da sola ogni
+                        7 minuti per 3 ore finche' non e' approvata.
 """
 import concurrent.futures as cf
 import csv
@@ -44,7 +48,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 
-VERSIONE = "0.12"
+VERSIONE = "0.13"
 CONF, CHIAVE, STATO_DIR = "/etc/minibench-net/config.env", "/etc/minibench-net/chiave", "/var/lib/minibench-net"
 QUI = os.path.dirname(os.path.realpath(__file__))
 # VERSIONE PER CONTAINER / SENZA ROOT (0.12, 17/11/2026): con MINIBENCH_DIR tutto sta in una cartella sola:
@@ -511,10 +515,70 @@ def verifica(args):
     return 0 if not blocchi else 1
 
 
+def _modulo(url, percorso, campi):
+    """POST di un modulo delle pagine (/chiedi, /ritira): torna (codice HTTP, testo della pagina)."""
+    import urllib.parse
+    req = urllib.request.Request(url + percorso, urllib.parse.urlencode(campi).encode(), method="POST", headers={
+        "User-Agent": f"minibench-net/{VERSIONE}", "Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        r = urllib.request.urlopen(req, timeout=30)
+        return r.status, r.read(20000).decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(20000).decode("utf-8", "replace")
+
+
+def chiedi_chiave(args):
+    """0.13 (17/11/2026, Iacopo: «la deve generare e noi accettiamo»): giro /chiedi -> approvazione nostra -> /ritira.
+    Il codice della richiesta resta in STATO_DIR/codice (600); la chiave va SOLO nel file CHIAVE (600), mai a video."""
+    if os.path.exists(CHIAVE) and os.path.getsize(CHIAVE) > 20:
+        print(f"la chiave c'e' gia' in {CHIAVE}: niente da chiedere"); return 0
+    conf = leggi_conf()
+    url = conf.get("MINIBENCH_NET_URL", "").rstrip("/")
+    if not url or "SERVER" in url:
+        print("MINIBENCH_NET_URL non configurato"); return 1
+    os.makedirs(STATO_DIR, mode=0o700, exist_ok=True)
+    fc = f"{STATO_DIR}/codice"
+    if not os.path.exists(fc):
+        import socket
+        campi = {"nick": conf.get("NICK") or "anonimo", "macchina": (conf.get("NOME_HOST") or socket.gethostname())[:64],
+                 "hosting": conf.get("TIPO_HOSTING") or "provider", "provider": (conf.get("PROVIDER") or "")[:64],
+                 "note": f"chiesta dalla sonda {VERSIONE}, hostname {socket.gethostname()}"[:300]}
+        cod, pag = _modulo(url, "/chiedi", campi)
+        m = re.search(r'class="codice">([A-Z2-9-]{20,29})<', pag)
+        n = re.search(r"richiesta n\. (\d+)", pag)
+        if cod != 200 or not m:
+            print(f"richiesta NON accettata dal server ({cod}): " + re.sub(r"<[^>]+>", " ", pag)[:200].split("Valutazione")[0].strip()); return 1
+        vecchio = os.umask(0o077)
+        open(fc, "w").write(m.group(1) + "\n"); os.umask(vecchio)
+        print(f"richiesta n. {n.group(1) if n else '?'} mandata per «{campi['macchina']}»: ora deve approvarla chi gestisce il server")
+    codice = open(fc).read().strip()
+    giri = 26 if "--aspetta" in args else 1
+    for i in range(giri):
+        cod, pag = _modulo(url, "/ritira", {"codice": codice})
+        m = re.search(r'class="codice">(mbn_[A-Za-z0-9_-]{20,})<', pag)
+        if m:
+            vecchio = os.umask(0o077)
+            with open(CHIAVE + ".tmp", "w") as f:
+                f.write(m.group(1) + "\n")
+            os.chmod(CHIAVE + ".tmp", 0o600); os.replace(CHIAVE + ".tmp", CHIAVE); os.umask(vecchio)
+            os.replace(fc, fc + ".usato")
+            print(f"chiave RITIRATA e salvata in {CHIAVE} (600). Non viene mostrata."); return 0
+        if "Ancora in attesa" in pag:
+            print(f"{ora_utc()} in attesa di approvazione" + (", riprovo tra 7 minuti" if i < giri - 1 else ": rilancia piu' tardi"))
+            if i < giri - 1:
+                time.sleep(420)
+            continue
+        stato_r = re.search(r"<h1[^>]*>([^<]+)</h1>", pag)
+        print(f"ritiro non riuscito ({cod}): {stato_r.group(1) if stato_r else 'risposta inattesa'}"); return 1
+    return 2
+
+
 def main():
     args = sys.argv[1:]
     if "--verifica" in args:
         raise SystemExit(verifica(args))
+    if "--chiedi-chiave" in args:
+        raise SystemExit(chiedi_chiave(args))
     prova = args[args.index("--prova") + 1] if "--prova" in args else None
     solo = args[args.index("--solo") + 1] if "--solo" in args else prova
     demone = "--demone" in args

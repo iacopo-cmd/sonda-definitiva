@@ -6,8 +6,8 @@ compilato (`config.env.esempio`, macchina netcup). Non modificarlo e non modific
 
 ## Regole
 - Lavora a blocchi e scrivi all'umano dopo ogni blocco: cosa hai fatto, esito, cosa fai dopo.
-- La **chiave** è un segreto: la chiedi all'umano in chat SOLO al passo 3, la scrivi nel file e basta.
-  Non ripeterla, non stamparla, non salvarla in memoria, nei log o in altri file. Dopo, controlli solo che il file sia 600.
+- La **chiave** è un segreto: la sonda la chiede e la ritira da sola (passo 3) e la scrive nel file. Tu non la chiedi a
+  nessuno, non apri il file, non la stampi. Controlli solo che il file esista con permessi 600.
 - Non installare pacchetti, non aprire porte, non toccare niente fuori da `/opt/minibench-net`, `/etc/minibench-net`,
   `/var/lib/minibench-net` e dai tre file di systemd `minibench-net*`.
 - Se un comando fallisce o la verifica dice **FERMO**: fermati e riporta le righe esatte. Non improvvisare correzioni.
@@ -24,17 +24,18 @@ L'ultima riga deve dire PRONTO (la chiave a questo punto manca ancora: va bene).
 bash installa.sh minibench.sh
 ```
 
-## 3. La chiave: chiedila all'umano in chat
-L'umano non ha un terminale sulla macchina: la chiave te la dà lui in chat. Scrivigli:
-
-> Installazione fatta. Ora mandami la chiave della macchina (una riga): la scrivo nel file e non la ripeto.
-
-Quando arriva, scrivila con UN solo comando e non nominarla mai più (né nei messaggi, né in memoria, né in altri file):
+## 3. La chiave: la sonda la chiede da sola, noi la approviamo
+Nessuno ti dà la chiave e tu non la vedi mai. Lancia:
 ```bash
-umask 077; printf '%s\n' 'LA-CHIAVE' > /etc/minibench-net/chiave; chmod 600 /etc/minibench-net/chiave
-stat -c '%a %s' /etc/minibench-net/chiave     # deve dire 600 e una lunghezza > 20
+python3 -I /opt/minibench-net/minibench-net.py --chiedi-chiave
 ```
-Poi rispondi solo «chiave salvata (600)».
+Stampa «richiesta n. N mandata per «netcup»» e «in attesa di approvazione». Scrivi all'umano:
+
+> Richiesta n. N mandata al server di MiniBench Net per la macchina netcup: fatela approvare e ditemi «approvata».
+
+Quando risponde, rilancia lo stesso comando: deve dire «chiave RITIRATA e salvata in /etc/minibench-net/chiave (600)».
+Se dice ancora «in attesa», riprova dopo qualche minuto (non più di 8 volte l'ora). Non aprire il file della chiave e
+non cancellare `/var/lib/minibench-net/codice`: senza codice la chiave non si ritira più.
 
 ## 4. Verifica completa e accendi
 ```bash
