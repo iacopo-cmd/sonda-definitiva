@@ -1,0 +1,6 @@
+[Unit]
+Description=MiniBench Net: guardiano (il demone e' vivo?)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/minibench-net/vivo.sh

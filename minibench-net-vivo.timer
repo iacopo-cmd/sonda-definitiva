@@ -1,0 +1,9 @@
+[Unit]
+Description=MiniBench Net: guardiano ogni 15 minuti
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

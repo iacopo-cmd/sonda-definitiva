@@ -1,0 +1,15 @@
+[Unit]
+Description=MiniBench Net: demone (check, ping, traceroute, test CPU, ognuno col suo ritmo)
+Documentation=https://github.com/iacopo-cmd/minibench-net-client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I -u /opt/minibench-net/minibench-net.py --demone
+Restart=always
+RestartSec=30
+# niente Nice/CPUQuota: il benchmark deve misurare la macchina com'e'
+
+[Install]
+WantedBy=multi-user.target
