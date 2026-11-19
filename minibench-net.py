@@ -25,6 +25,7 @@ ogni quanto ripassare»): l'orario lo da' il SERVER (/v1/target: torna_tra e seq
 3.547 s). Su disco NON si scrive piu' niente di continuo: stato solo in memoria, battito, storico di minibench.sh e lucchetto
 in RAM (/run/minibench-net, o /dev/shm); /var/lib/minibench-net/battito diventa un collegamento al battito in RAM (per il
 guardiano vecchio). Su disco restano solo id_locale, sale e chiave, scritti una volta.
+0.15.1 (19/11): solo il numero di versione, per provare che il server se ne accorge (dati.cambi_versione, avviso su Telegram).
 Uso:   minibench-net.py --demone        (il servizio: gira per sempre)
        minibench-net.py                 (un giro solo: i lavori scaduti)
        minibench-net.py --solo LAVORO   (quel lavoro adesso)   --prova LAVORO (stampa il JSON, non manda)
@@ -59,7 +60,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 
-VERSIONE = "0.15"
+VERSIONE = "0.15.1"
 CONF, CHIAVE, STATO_DIR = "/etc/minibench-net/config.env", "/etc/minibench-net/chiave", "/var/lib/minibench-net"
 QUI = os.path.dirname(os.path.realpath(__file__))
 # VERSIONE PER CONTAINER / SENZA ROOT (0.12, 17/11/2026): con MINIBENCH_DIR tutto sta in una cartella sola:
