@@ -20,6 +20,11 @@ File:  /etc/minibench-net/config.env  (URL, nome, provider...)   /etc/minibench-
 Impronte (schema 2, 17/11/2026): HMAC-SHA256 con un SALE segreto della macchina (/var/lib/minibench-net/sale, 256 bit, 600)
 che NON esce mai dalla macchina: chi riceve l'impronta (anche il server) non puo' risalire al valore ne' confrontarlo con
 altre fonti. Si raccolgono solo valori casuali e non pubblici: id_locale, dmi_uuid, machine_id, disco_uuid.
+0.15 (19/11/2026, Iacopo: «il minibench deve scalare col tempo»; «meglio non scrivere file»; «viene da noi e noi gli diciamo
+ogni quanto ripassare»): l'orario lo da' il SERVER (/v1/target: torna_tra e seq; test CPU fitto il primo giorno, poi ogni
+3.547 s). Su disco NON si scrive piu' niente di continuo: stato solo in memoria, battito, storico di minibench.sh e lucchetto
+in RAM (/run/minibench-net, o /dev/shm); /var/lib/minibench-net/battito diventa un collegamento al battito in RAM (per il
+guardiano vecchio). Su disco restano solo id_locale, sale e chiave, scritti una volta.
 Uso:   minibench-net.py --demone        (il servizio: gira per sempre)
        minibench-net.py                 (un giro solo: i lavori scaduti)
        minibench-net.py --solo LAVORO   (quel lavoro adesso)   --prova LAVORO (stampa il JSON, non manda)
@@ -30,6 +35,10 @@ Uso:   minibench-net.py --demone        (il servizio: gira per sempre)
                         provider del config), noi approviamo, lei la RITIRA (/ritira) e la scrive in /etc/minibench-net/chiave
                         (600). La chiave non passa da nessuna chat e non si stampa mai. --aspetta: riprova da sola ogni
                         7 minuti per 3 ore finche' non e' approvata.
+       minibench-net.py --installa-agente   (0.14) TUTTO IN UN COMANDO, per un agente (OpenClaw, Hermes...) in un container
+                        senza root: verifica, chiede la chiave e aspetta l'approvazione, primo test, accende il demone in
+                        background (log in dati/demone.log) e stampa un rapporto di 5 righe. Si puo' rilanciare quando si vuole:
+                        riprende da dove era (chiave gia' presa, demone gia' acceso).
 """
 import concurrent.futures as cf
 import csv
@@ -40,6 +49,8 @@ import json
 import os
 import re
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -48,13 +59,23 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 
-VERSIONE = "0.13"
+VERSIONE = "0.15"
 CONF, CHIAVE, STATO_DIR = "/etc/minibench-net/config.env", "/etc/minibench-net/chiave", "/var/lib/minibench-net"
 QUI = os.path.dirname(os.path.realpath(__file__))
 # VERSIONE PER CONTAINER / SENZA ROOT (0.12, 17/11/2026): con MINIBENCH_DIR tutto sta in una cartella sola:
 #   $MINIBENCH_DIR/config.env   $MINIBENCH_DIR/chiave   $MINIBENCH_DIR/stato/ (id_locale, sale, stato, storico)
 # Niente root e niente systemd: il demone si lancia in primo piano (--demone) da chi gestisce il container.
 CARTELLA = os.environ.get("MINIBENCH_DIR", "").strip()
+if not CARTELLA and "--installa-agente" in sys.argv:
+    CARTELLA = os.path.join(QUI, "dati")                 # 0.14: agente (root o no) -> tutto nella cartella «dati» accanto al client
+    os.environ["MINIBENCH_DIR"] = CARTELLA
+# 0.15: quello che cambia di continuo sta in RAM, non sul disco
+if os.geteuid() == 0 and not CARTELLA and os.path.isdir("/run"):
+    RAM_DIR = "/run/minibench-net"
+elif os.path.isdir("/dev/shm"):
+    RAM_DIR = f"/dev/shm/minibench-net-{os.geteuid()}"
+else:
+    RAM_DIR = None                                     # niente RAM disponibile: si usa STATO_DIR come prima
 if CARTELLA:
     CARTELLA = os.path.abspath(os.path.expanduser(CARTELLA))
     CONF, CHIAVE, STATO_DIR = f"{CARTELLA}/config.env", f"{CARTELLA}/chiave", f"{CARTELLA}/stato"
@@ -102,16 +123,23 @@ def leggi_conf():
     return c
 
 
+_STATO = {}
+
+
 def stato(nuovo=None):
-    p = f"{STATO_DIR}/stato.json"
+    """0.15: lo stato (numeri di consegna, ora dell'ultimo lavoro, target) sta SOLO in memoria. Se la sonda riparte,
+    il server le ridice quando tornare e da che numero ripartire (/v1/target: torna_tra, seq)."""
+    global _STATO
     if nuovo is None:
-        try:
-            return json.load(open(p))
-        except (OSError, ValueError):
-            return {}
-    tmp = p + ".tmp"
-    json.dump(nuovo, open(tmp, "w"), indent=1)
-    os.replace(tmp, p)
+        return _STATO
+    _STATO = nuovo
+
+
+def ram(nome):
+    """Percorso di un file che cambia di continuo: in RAM se si puo', altrimenti nella cartella di stato."""
+    d = RAM_DIR or STATO_DIR
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return os.path.join(d, nome)
 
 
 # ---------------- 1. minibench ----------------
@@ -168,10 +196,73 @@ def sale():
     return bytes.fromhex(open(p).read().strip())
 
 
+# ---- rete SENZA i programmi ip e ping (0.14, dalla variante mg2 di Monitor Global, 17/11/2026): nei container minimi non ci sono ----
+def mio_indirizzo(v6=False):
+    """L'indirizzo con cui la macchina esce verso Internet (UDP connect: non manda niente). None se non c'e' rotta."""
+    try:
+        with socket.socket(socket.AF_INET6 if v6 else socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("2001:4860:4860::8888" if v6 else "1.1.1.1", 53))
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
 def scheda_principale():
-    out = subprocess.run(["ip", "-4", "route", "get", "1.1.1.1"], capture_output=True, text=True).stdout
-    m = re.search(r"\bdev (\S+)", out)
-    return m.group(1) if m else None
+    """La scheda con la rotta predefinita IPv4, da /proc/net/route (niente programma ip)."""
+    try:
+        for riga in open("/proc/net/route").read().splitlines()[1:]:
+            c = riga.split()
+            if len(c) > 7 and c[1] == "00000000" and c[7] == "00000000":
+                return c[0]
+    except OSError:
+        pass
+    return None
+
+
+def ha_ipv6_globale():
+    """Un indirizzo IPv6 globale su una scheda (da /proc/net/if_inet6: ambito 00 = globale)."""
+    try:
+        return any(r.split()[3] == "00" for r in open("/proc/net/if_inet6") if len(r.split()) > 3 and not r.startswith("00000000000000000000000000000001"))
+    except OSError:
+        return False
+
+
+def _somma(b):
+    if len(b) % 2:
+        b += b"\0"
+    s = sum(struct.unpack(f"!{len(b) // 2}H", b))
+    s = (s >> 16) + (s & 0xFFFF)
+    return ~(s + (s >> 16)) & 0xFFFF
+
+
+def ping_python(ip, v6=False, n=4, intervallo=0.5, attesa=2.0):
+    """Ping con i socket ICMP senza privilegi (net.ipv4.ping_group_range, aperto di norma nei container Docker).
+    Ritorna {seq: ms} dei ping arrivati, oppure None se il sistema non li permette."""
+    try:
+        s = socket.socket(socket.AF_INET6 if v6 else socket.AF_INET, socket.SOCK_DGRAM,
+                          socket.IPPROTO_ICMPV6 if v6 else socket.IPPROTO_ICMP)
+    except OSError:
+        return None
+    t = {}
+    with s:
+        s.settimeout(attesa)
+        for seq in range(1, n + 1):
+            corpo = struct.pack("!d", time.time()) + b"minibench-net"
+            testa = struct.pack("!BBHHH", 128 if v6 else 8, 0, 0, 0, seq)
+            pacco = testa[:2] + struct.pack("!H", 0 if v6 else _somma(testa + corpo)) + testa[4:] + corpo
+            a = T()
+            try:
+                s.sendto(pacco, (ip, 0))
+                while True:
+                    risposta = s.recv(2048)
+                    if len(risposta) >= 8 and risposta[0] == (129 if v6 else 0) and struct.unpack("!H", risposta[6:8])[0] == seq:
+                        t[seq] = (T() - a) * 1000
+                        break
+            except OSError:
+                pass
+            if seq < n:
+                time.sleep(intervallo)
+    return t
 
 
 FONTI = {
@@ -214,10 +305,11 @@ def impronte(prima: dict):
 # ---------------- 3. ping ----------------
 def ha_ipv6():
     """IPv6 che funziona davvero: una rotta verso fuori E una risposta (provato una volta per giro)."""
-    r = subprocess.run(["ip", "-6", "route", "get", "2001:4860:4860::8888"], capture_output=True, text=True)
-    if r.returncode != 0 or "unreachable" in (r.stdout + r.stderr).lower():
+    if not mio_indirizzo(v6=True):
         return False
-    return subprocess.run(["ping", "-6", "-n", "-c", "1", "-W", "2", "2001:4860:4860::8888"], capture_output=True).returncode == 0
+    if shutil.which("ping"):
+        return subprocess.run(["ping", "-6", "-n", "-c", "1", "-W", "2", "2001:4860:4860::8888"], capture_output=True).returncode == 0
+    return bool(ping_python("2001:4860:4860::8888", v6=True, n=1))
 
 
 def _ptr(ip):
@@ -231,9 +323,8 @@ def _ptr(ip):
 
 def qualita(tg):
     """Lista di controllo della rete: IPv6 (ok / indirizzo senza rotta / assente) e nomi inversi. Manda solo si/no."""
-    out = subprocess.run(["ip", "-6", "route", "get", "2001:4860:4860::8888"], capture_output=True, text=True).stdout
-    m = re.search(r"\bsrc (\S+)", out)
-    ha_indirizzo = bool(subprocess.run(["ip", "-6", "addr", "show", "scope", "global"], capture_output=True, text=True).stdout.strip())
+    src6 = mio_indirizzo(v6=True)
+    ha_indirizzo = ha_ipv6_globale()
     v6 = "ok" if ha_ipv6() else ("senza_rotta" if ha_indirizzo else "assente")
     import ipaddress
     mio4 = tg.get("tuo_ip") or ""
@@ -242,26 +333,25 @@ def qualita(tg):
     except ValueError:
         pubblico = False
     if not pubblico:                 # il server ci vede da un indirizzo interno (es. stessa macchina): uso quello con cui esco
-        o4 = subprocess.run(["ip", "-4", "route", "get", "1.1.1.1"], capture_output=True, text=True).stdout
-        m4 = re.search(r"\bsrc (\S+)", o4)
-        mio4 = m4.group(1) if m4 else ""
+        mio4 = mio_indirizzo() or ""
         try:
             pubblico = ipaddress.ip_address(mio4).is_global
         except ValueError:
             pubblico = False
     p4 = _ptr(mio4) if pubblico else None
-    p6 = _ptr(m.group(1)) if v6 == "ok" and m else None
+    p6 = _ptr(src6) if v6 == "ok" and src6 else None
     q = {"ipv6": v6, "ptr4": (p4 is not None) if pubblico else None}
     # indirizzo IPv4 della scheda con la rotta: privato = la macchina sta dietro NAT (l'IP che vede il server e' di un router,
     # e puo' cambiare senza che la macchina se ne accorga); «dynamic» = assegnato con DHCP. Si manda solo si/no.
-    o4 = subprocess.run(["ip", "-4", "route", "get", "1.1.1.1"], capture_output=True, text=True).stdout
-    s4, d4 = re.search(r"\bsrc (\S+)", o4), re.search(r"\bdev (\S+)", o4)
-    if s4:
+    src4, dev4 = mio_indirizzo(), scheda_principale()
+    if src4:
         try:
-            q["ip_nat"] = not ipaddress.ip_address(s4.group(1)).is_global
+            q["ip_nat"] = not ipaddress.ip_address(src4).is_global
         except ValueError:
             pass
-    if s4 and d4:
+    s4 = re.match(r"(.*)", src4 or "") if src4 else None
+    d4 = re.match(r"(.*)", dev4 or "") if dev4 else None
+    if s4 and d4 and shutil.which("ip"):                # DHCP si sa solo col programma ip
         riga = [l for l in subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", d4.group(1)], capture_output=True, text=True).stdout.splitlines()
                 if f" {s4.group(1)}/" in l]
         if riga:
@@ -334,6 +424,9 @@ def bersagli(tg, con_v6):
 
 
 def ping(bersaglio):
+    if not shutil.which("ping"):                         # container minimo: ping in Python
+        t = ping_python(bersaglio["ip"], bersaglio["v6"]) or {}
+        return {"target_id": bersaglio["id"], "v6": bersaglio["v6"], "primo_ms": t.get(1), "altri": [t[s] for s in (2, 3, 4) if s in t]}
     out = subprocess.run(["ping", "-6" if bersaglio["v6"] else "-4", "-n", "-c", "4", "-i", "0.5", "-W", "2", bersaglio["ip"]],
                          capture_output=True, text=True, timeout=30).stdout
     t = {int(s): float(v) for s, v in re.findall(r"icmp_seq=(\d+) .*?time=([\d.]+)", out)}
@@ -400,13 +493,25 @@ def ora_utc():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def leggi_conf_sicuro():
+    try:
+        return leggi_conf()
+    except OSError:
+        return {}
+
+
 def prendi_target(url, chiave, st, forza=False):
     """Target e intervalli dal server: si ricaricano ogni 10 minuti (se il server non risponde, tengo quelli vecchi)."""
     if forza or not st.get("target") or time.time() - st.get("target_preso", 0) > 600:
         cod, tg = chiama(f"{url}/v1/target", chiave)
         if cod == 200:
+            if not st.get("allineato") and isinstance(tg.get("torna_tra"), dict):   # 0.15: orario e numeri dal server
+                adesso, ogni = time.time(), intervalli(leggi_conf_sicuro(), tg)
+                for l in LAVORI:
+                    st["seq"][l] = max(st["seq"].get(l, 0), int((tg.get("seq") or {}).get(l, 0)))
+                    st["fatto"][l] = adesso + float(tg["torna_tra"].get(l, 0)) - ogni[l]
+                st["allineato"] = True
             st["target"], st["target_preso"] = tg, time.time()
-            stato(st)
         elif not st.get("target"):
             raise SystemExit(f"target: {cod} {tg}")
         else:
@@ -420,6 +525,9 @@ def giro(conf, url, chiave, st, solo=None, prova=None):
     ogni = intervalli(conf, tg)
     adesso = time.time()
     da_fare = [solo] if solo else [l for l in LAVORI if adesso - st["fatto"].get(l, 0) >= ogni[l]]
+    if "test" in da_fare and not solo and conf.get("TEST_CPU", "si").strip().lower() in ("no", "0", "off"):
+        da_fare.remove("test")                               # TEST_CPU=no: niente test CPU
+        st["fatto"]["test"] = adesso
     if "test" in da_fare and not solo and datetime.now(timezone.utc).minute in minuti_da_evitare(conf):
         da_fare.remove("test")
         st["fatto"]["test"] = adesso - ogni["test"] + 60       # riprovo fra un minuto
@@ -441,9 +549,16 @@ def giro(conf, url, chiave, st, solo=None, prova=None):
 
 
 def battito():
-    p = f"{STATO_DIR}/battito"
+    """Il battito per il guardiano (vivo.sh): in RAM; /var/lib/minibench-net/battito diventa un collegamento a quel file."""
+    p = ram("battito")
     open(p + ".tmp", "w").write(f"{time.time():.0f} {datetime.now(timezone.utc).isoformat(timespec='seconds')}\n")
     os.replace(p + ".tmp", p)
+    vecchio = f"{STATO_DIR}/battito"
+    if RAM_DIR and not CARTELLA and os.path.realpath(vecchio) != os.path.realpath(p):
+        try:
+            os.symlink(p, vecchio + ".nuovo"); os.replace(vecchio + ".nuovo", vecchio)   # una volta sola
+        except OSError:
+            pass
 
 
 def verifica(args):
@@ -464,8 +579,18 @@ def verifica(args):
         segna(ha_systemd, "systemd presente" if ha_systemd else "systemd assente: usa la versione per container (MINIBENCH_DIR)")
         segna(not cont, "non e' un container" if not cont else f"e' un CONTAINER ({cont}): usa la versione per container (MINIBENCH_DIR)")
     segna(sys.version_info >= (3, 9), f"python {sys.version.split()[0]}" + ("" if sys.version_info >= (3, 9) else ": serve 3.9 o piu' recente"))
-    mancano = [c for c in ("openssl", "ping", "findmnt", "ip") if not shutil.which(c)]
+    mancano = [c for c in ("openssl",) if not shutil.which(c)]
     segna(not mancano, "programmi necessari presenti" if not mancano else "mancano: " + ", ".join(mancano))
+    # ping e ip non sono piu' obbligatori (0.12-mg2): se mancano, il client li fa in Python
+    if not shutil.which("ping"):
+        t = ping_python("1.1.1.1", n=1)
+        segna(t is not None, "ping assente: si usa il ping in Python" + (" (provato: risponde)" if t else " (permesso, ma 1.1.1.1 non ha risposto)")
+              if t is not None else "ping assente e il ping in Python non e' permesso (net.ipv4.ping_group_range): niente misure di rete",
+              bloccante=False)
+    if not shutil.which("ip"):
+        segna(True, "programma ip assente: rotta e indirizzi letti da /proc (DHCP non rilevabile)", bloccante=False)
+    if not shutil.which("findmnt"):
+        segna(True, "findmnt assente: impronta del disco saltata", bloccante=False)
     tr = shutil.which("traceroute") or shutil.which("tracepath")
     segna(bool(tr), "traceroute presente" if tr else "traceroute assente: i percorsi non si faranno (consigliato)", bloccante=False)
     for d in ((CARTELLA,) if CARTELLA else ("/etc/minibench-net", STATO_DIR, "/opt/minibench-net")):
@@ -564,13 +689,79 @@ def chiedi_chiave(args):
             os.replace(fc, fc + ".usato")
             print(f"chiave RITIRATA e salvata in {CHIAVE} (600). Non viene mostrata."); return 0
         if "Ancora in attesa" in pag:
-            print(f"{ora_utc()} in attesa di approvazione" + (", riprovo tra 7 minuti" if i < giri - 1 else ": rilancia piu' tardi"))
+            print(f"{ora_utc()} in attesa di approvazione" + (f", riprovo tra {1 if i == 0 else 7} minuti" if i < giri - 1 else ": rilancia piu' tardi"), flush=True)
             if i < giri - 1:
-                time.sleep(420)
+                time.sleep(60 if i == 0 else 420)              # il primo riprova presto: di solito approviamo subito
             continue
         stato_r = re.search(r"<h1[^>]*>([^<]+)</h1>", pag)
         print(f"ritiro non riuscito ({cod}): {stato_r.group(1) if stato_r else 'risposta inattesa'}"); return 1
     return 2
+
+
+def demone_acceso():
+    """Il demone tiene il lucchetto .giro.lock: se non si riesce a prenderlo, e' acceso."""
+    try:
+        f = open(ram(".giro.lock"), "w")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(f, fcntl.LOCK_UN)
+        return False
+    except BlockingIOError:
+        return True
+    finally:
+        f.close()
+
+
+def installa_agente(args):
+    """0.14 (17/11/2026, Iacopo: «come il Claude di Edo che si e' auto installato, ma per un agente OpenClaw»).
+    Un comando solo, rilanciabile: verifica -> chiave (chiesta e ritirata da sola) -> primo test -> demone in background."""
+    io = os.path.realpath(__file__)
+    passo = lambda n, t: print(f"\n[{n}/5] {t}", flush=True)
+    os.makedirs(STATO_DIR, mode=0o700, exist_ok=True)
+    if not os.path.exists(CONF):
+        es = os.path.join(QUI, "config.env.esempio")
+        vecchio = os.umask(0o077); shutil.copyfile(es, CONF); os.umask(vecchio)
+    passo(1, "verifica")
+    if verifica(["--prima"]) != 0:
+        print("\nFERMO alla verifica: riporta le righe con NO."); return 1
+    passo(2, "chiave (la chiede la sonda; noi approviamo)")
+    if chiedi_chiave(["--aspetta"]) != 0:
+        print("\nFERMO: chiave non ancora ritirata. Rilancia lo stesso comando piu' tardi."); return 2
+    conf = leggi_conf()
+    _, tg = chiama(conf.get("MINIBENCH_NET_URL", "").rstrip("/") + "/v1/target", open(CHIAVE).read().strip())
+    passo(3, "primo test della CPU (qualche minuto)")
+    if int(((tg or {}).get("seq") or {}).get("test", 0)) > 0:
+        print("test gia' fatto in passato: salto")
+    else:
+        time.sleep(30)                                     # il tempo di rendere «nostra» la chiave sul server
+        for giro_t in range(30):                           # fino a un'ora: il tempo di rendere «nostra» la chiave
+            r = subprocess.run([sys.executable, "-I", io, "--solo", "test"], capture_output=True, text=True,
+                               env={**os.environ, "MINIBENCH_DIR": CARTELLA} if CARTELLA else None)
+            righe = [l for l in (r.stdout + r.stderr).splitlines() if "test n." in l]
+            print(righe[-1] if righe else (r.stdout + r.stderr)[-300:], flush=True)
+            if righe and re.search(r"test n\.\d+: 20[01]", righe[-1]):
+                break
+            if giro_t < 29:
+                print("riprovo tra 2 minuti (la chiave deve ancora essere resa «nostra»?)", flush=True); time.sleep(120)
+        else:
+            print("\nFERMO: il test non e' stato accettato. Riporta le righe qui sopra."); return 3
+    passo(4, "demone in background")
+    if demone_acceso():
+        print("gia' acceso")
+    else:
+        logf = open(os.path.join(CARTELLA or STATO_DIR, "demone.log"), "a")
+        subprocess.Popen([sys.executable, "-I", "-u", io, "--demone"], stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                         start_new_session=True, env={**os.environ, "MINIBENCH_DIR": CARTELLA} if CARTELLA else None)
+        time.sleep(5)
+        print("acceso" if demone_acceso() else "NON si e' acceso: guarda demone.log")
+    passo(5, "rapporto")
+    conf = leggi_conf()
+    print(f"sonda {VERSIONE} · cartella {CARTELLA or '/etc + /var/lib'} · server {conf.get('MINIBENCH_NET_URL')}")
+    print(f"chiave: presente (600) · demone: {'acceso' if demone_acceso() else 'SPENTO'} · test CPU ogni {conf.get('OGNI_TEST_MIN') or 'come dice il server'} min")
+    print("FATTO. Se il container riparte, rilancia: python3 -I minibench-net.py --installa-agente")
+    return 0
 
 
 def main():
@@ -579,13 +770,15 @@ def main():
         raise SystemExit(verifica(args))
     if "--chiedi-chiave" in args:
         raise SystemExit(chiedi_chiave(args))
+    if "--installa-agente" in args:
+        raise SystemExit(installa_agente(args))
     prova = args[args.index("--prova") + 1] if "--prova" in args else None
     solo = args[args.index("--solo") + 1] if "--solo" in args else prova
     demone = "--demone" in args
     if solo and solo not in LAVORI:
         raise SystemExit(f"lavori: {', '.join(LAVORI)}")
     os.makedirs(STATO_DIR, mode=0o700, exist_ok=True)
-    blocco = open(f"{STATO_DIR}/.giro.lock", "w")
+    blocco = open(ram(".giro.lock"), "w")
     try:
         fcntl.flock(blocco, fcntl.LOCK_EX | fcntl.LOCK_NB)        # una sola istanza
     except BlockingIOError:
@@ -640,6 +833,9 @@ def fai(lavoro, conf, url, chiave, st, tg, prova):
         log(f"ping: {len(pings)} misure in {T() - a:.1f} s (IPv6: {'si' if v6 else 'no'})")
         manda("ping", url, chiave, st, {"ping": pings}, prova)
     elif lavoro == "percorsi":
+        if not (shutil.which("traceroute") or shutil.which("tracepath")):
+            log("traceroute: ne' traceroute ne' tracepath su questa macchina: percorsi saltati")
+            return
         a = T()
         v6 = ha_ipv6()
         with cf.ThreadPoolExecutor(8) as ex:
@@ -649,7 +845,7 @@ def fai(lavoro, conf, url, chiave, st, tg, prova):
     elif lavoro == "test":
         time.sleep(6)                      # pausa: check e ping dello stesso giro non devono risultare come «macchina occupata»
         occ = occupata(3.0)
-        test = minibench(script_minibench(conf), f"{STATO_DIR}/minibench.csv")
+        test = minibench(script_minibench(conf), ram("minibench.csv"))
         imp, tempi, tot_us, esito = impronte(st.get("impronte"))
         pubblici = [p for p in conf.get("PUBBLICI", "").replace(" ", "").split(",") if p]
         dettagli = {k: v for k, v in {

@@ -1,8 +1,8 @@
 # Sonda definitiva — MiniBench Net
 
-Sonda di **MiniBench Net** («Valutazione indipendente di VPS e connettività»), versione 0.13, con il benchmark
+Sonda di **MiniBench Net** («Valutazione indipendente di VPS e connettività»), versione 0.15, con il benchmark
 [minibench.sh](https://github.com/iacopo-cmd/minibench.sh) già dentro. Gira su una VPS Linux come demone di systemd:
-test della CPU e dello steal ogni 9 minuti, controllo ogni 3, ping ogni 27, traceroute ogni 12 ore (gli intervalli li dà il server).
+test della CPU e dello steal il primo giorno ogni 9 minuti circa e poi ogni ora circa, controllo ogni 3, ping ogni 27, traceroute ogni 12 ore (gli intervalli li dà il server).
 
 - **Serve una chiave**, una per macchina: la sonda la chiede da sola, noi approviamo.
 - **Legge soltanto**: non cambia la configurazione, non apre porte, non installa pacchetti.

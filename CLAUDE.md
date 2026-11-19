@@ -47,7 +47,7 @@ journalctl -u minibench-net.service --since "-3 min" --no-pager | tail -20
 Se la verifica dice «chiave RIFIUTATA», fermati: non riprovare (5 errori in un giorno = indirizzo bannato).
 
 Nel registro devono comparire `check: 201` e poi `test: 201` (il primo test CPU dura qualche minuto e carica la macchina: è normale).
-Da qui la sonda gira da sola: test CPU ogni 9 minuti, check ogni 3, ping ogni 27, traceroute ogni 12 ore.
+Da qui la sonda gira da sola: test CPU il primo giorno ogni 9 minuti circa, poi ogni ora circa (lo decide il server), check ogni 3, ping ogni 27, traceroute ogni 12 ore.
 
 ## 5. Riporta all'umano
 `hostname`, sistema (`. /etc/os-release; echo $PRETTY_NAME`), esito di `systemctl is-active minibench-net.service`
