@@ -24,15 +24,18 @@ L'ultima riga deve dire PRONTO (la chiave a questo punto manca ancora: va bene).
 bash installa.sh minibench.sh
 ```
 
-## 3. Iscrizione automatica (v2): niente da approvare
+## 3. La chiave: la sonda la chiede da sola, noi la approviamo
 Nessuno ti dà la chiave e tu non la vedi mai. Lancia:
 ```bash
-python3 -I /opt/minibench-net/minibench-net.py --iscrivi
+python3 -I /opt/minibench-net/minibench-net.py --chiedi-chiave
 ```
-Deve dire «ISCRITTA (v2), chiave n. N». La sonda si mette d'accordo col server (chiavi X25519), ricava la sua chiave
-d'accesso e la salva in `/etc/minibench-net/chiave` (600): nessuno deve approvare. Se dice «iscrizione NON riuscita»,
-fermati e riporta la riga esatta (per esempio un limite di macchine per indirizzo). Non aprire i file della chiave.
-La macchina parte in quarantena e entra in classifica da sola dopo qualche giorno di dati coerenti.
+Stampa «richiesta n. N mandata per «netcup»» e «in attesa di approvazione». Scrivi all'umano:
+
+> Richiesta n. N mandata al server di MiniBench Net per la macchina netcup: fatela approvare e ditemi «approvata».
+
+Quando risponde, rilancia lo stesso comando: deve dire «chiave RITIRATA e salvata in /etc/minibench-net/chiave (600)».
+Se dice ancora «in attesa», riprova dopo qualche minuto (non più di 8 volte l'ora). Non aprire il file della chiave e
+non cancellare `/var/lib/minibench-net/codice`: senza codice la chiave non si ritira più.
 
 ## 4. Verifica completa e accendi
 ```bash
@@ -44,7 +47,7 @@ journalctl -u minibench-net.service --since "-3 min" --no-pager | tail -20
 Se la verifica dice «chiave RIFIUTATA», fermati: non riprovare (5 errori in un giorno = indirizzo bannato).
 
 Nel registro devono comparire `check: 201` e poi `test: 201` (il primo test CPU dura qualche minuto e carica la macchina: è normale).
-Da qui la sonda gira da sola: test CPU il primo giorno ogni 9 minuti circa, poi ogni ora circa (lo decide il server), check ogni 3, ping ogni 27, traceroute ogni 12 ore.
+Da qui la sonda gira da sola: test CPU ogni 9 minuti, check ogni 3, ping ogni 27, traceroute ogni 12 ore.
 
 ## 5. Riporta all'umano
 `hostname`, sistema (`. /etc/os-release; echo $PRETTY_NAME`), esito di `systemctl is-active minibench-net.service`
